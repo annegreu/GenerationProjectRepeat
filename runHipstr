@@ -1,0 +1,89 @@
+#Find the STR positions in the reference genome
+#Download the Tandem Repeat Finder from this webpage: https://tandem.bu.edu/trf/trf409.macosx.download.html
+#Generate dat file with STR positions using the Tandem Repeat Finder
+./trf409.macosx TAIR10_chr_all.fas 2 7 7 80 10 30 9 -f -d -m -h
+
+#rename HipsSTR output from TAIR10_chr_all.fas.2.7.7.80.10.30.500.dat to TAIR10_chr_all.fas.dat
+mv TAIR10_chr_all.fas.2.7.7.80.10.30.9.dat TAIR10_chr_all.fas.dat
+
+#To use the file in HipSTR it needs to be in bed file format so we convert it using the TRFdat_to_bed.py python script available here: https://github.com/hdashnow/TandemRepeatFinder_scripts/blob/master/TRFdat_to_bed.py
+
+#Convert dat file to bed file for HipSTR
+./TRFdat_to_bed.py --dat TAIR10_chr_all.fas.dat --bed TAIR10_chr_all.fas.bed
+
+
+#Then split the bed file by chromosome so HipSTR can be run in parallel.
+```r
+#!/bin/r
+library("dplyr")
+
+txtTair10 <- read.table("TAIR10_chr_all.fas2.bed", sep="\t")
+
+annot_types <- c("1", "2", "3", "4", "5")
+
+for (i in annot_types){ 
+  for (j in annot_types){ 
+    if (i == j){
+      a <- filter(txtTair10, txtTair10[, 1] == i)
+      write.table(a, file = paste0("trfStrPositionsTAIR10_", j, ".txt"), sep="\t", col.names=FALSE, row.names=FALSE, quote=FALSE)
+    }
+  }
+}
+
+head(a, n=10)
+```
+
+#Running HipSTR - Haplotype inference and phasing for Short Tandem Repeats
+#To compare short tandem repeats from the sequencing data to the reference genome we run HipSTR.
+
+```bash 
+#!/bin/sh
+#SBATCH --job-name=genSeqAraHipstr.sh
+#SBATCH --time=168:0:0
+#SBATCH --mem-per-cpu=30000M 
+#SBATCH --partition=bigmem 
+#SBATCH --cpus-per-task=5
+
+#Run HipSTR
+ALIGNMENTS=/cluster/work/users/annegreu/genSeqAra/bams
+echo $ALIGNMENTS
+HIPSTR_OUT=/cluster/work/users/annegreu/genSeqAra/HipSTR
+echo $HIPSTR_OUT
+BAMS=$(ls $ALIGNMENTS/*.bam | paste -sd, -)
+echo $BAMS
+BAM_SAMPLES=$(ls $ALIGNMENTS/*.bam | cut -d '/' -f8 | cut -d '.' -f1 | paste -sd, -)
+echo $BAM_SAMPLES
+
+#Load in modules 
+module --force purge
+module load StdEnv
+module load HipSTR/0.6.2-foss-2018b-Python-3.6.6
+module swap GCCcore/7.3.0 GCCcore/8.3.0
+module swap zlib/1.2.11-GCCcore-7.3.0 zlib/1.2.11-GCCcore-8.3.0
+module load parallel/20190922-GCCcore-8.3.0
+
+parallel HipSTR\
+ --bams $BAMS\
+ --fasta /cluster/work/users/annegreu/genSeqAra/TAIR10_chr_all.fas\
+ --regions /cluster/work/users/annegreu/genSeqAra/trfStrPositionsTAIR10_{}.txt\
+ --str-vcf $HIPSTR_OUT/genSeqAra_LG{}.hipstr.vcf.gz\
+ --log /cluster/work/users/annegreu/genSeqAra/genSeqAra.hipstr.log\
+ --bam-samps $BAM_SAMPLES\
+ --bam-libs $BAM_SAMPLES\
+ --def-stutter-model\
+ --max-haps 100 ::: {1..5}
+
+#If the HipSTR was run for individual chromosomes in parallel the vcf files need to be merged.
+
+```bash 
+#!/bin/sh
+#SBATCH --job-name=genSeqAraMerge.sh
+#SBATCH --time=2:0:0
+#SBATCH --mem-per-cpu=4GB  
+#SBATCH --cpus-per-task=5
+
+module load  VCFtools/0.1.16-foss-2018b-Perl-5.28.0
+
+vcf-concat genSeqAra_LG1.hipstr.vcf.gz genSeqAra_LG2.hipstr.vcf.gz genSeqAra_LG3.hipstr.vcf.gz genSeqAra_LG4.hipstr.vcf.gz genSeqAra_LG5.hipstr.vcf.gz | gzip -c > genSeqAra.hipstr.vcf.gz
+```
+
